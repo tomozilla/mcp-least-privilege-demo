@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIに渡す前の「データ棚卸し」</title>
+<style>
+  :root { --ink:#1f2933; --sub:#6b7785; --line:#e3e8ee; --bg:#f4f6f9; --brand:#2563eb; --good:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; line-height:1.6; }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:14px 28px; }
+  header h1 { margin:0; font-size:18px; } header p { margin:2px 0 0; color:var(--sub); font-size:12.5px; }
+  .tabs { display:flex; gap:6px; padding:12px 28px 0; background:#fff; border-bottom:1px solid var(--line); }
+  .tabs button { border:0; background:transparent; padding:9px 16px; font:inherit; font-weight:600; color:var(--sub); border-bottom:3px solid transparent; cursor:pointer; }
+  .tabs button.on { color:var(--brand); border-bottom-color:var(--brand); }
+  main { max-width:1040px; margin:22px auto; padding:0 20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin-bottom:18px; }
+  h2 { margin:0 0 10px; font-size:14px; color:var(--sub); font-weight:600; }
+  .alert { border-radius:12px; padding:12px 16px; font-size:14px; margin-bottom:18px; } .alert.bad { background:#fee2e2; border:1px solid #fca5a5; color:#7f1d1d; } .alert.ok { background:#dcfce7; border:1px solid #86efac; color:#14532d; } .alert.warn { background:#fef3c7; border:1px solid #fcd34d; color:#78350f; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; } th, td { padding:9px 8px; border-top:1px solid var(--line); text-align:left; vertical-align:top; } th { border-top:0; color:var(--sub); font-weight:600; font-size:12px; }
+  .pill { display:inline-block; font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:999px; white-space:nowrap; }
+  .pill.ok { background:#dcfce7; color:#14532d; } .pill.warn { background:#fef3c7; color:#78350f; } .pill.bad { background:#fee2e2; color:#7f1d1d; } .pill.mute { background:#eef2f7; color:#52606d; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:6px; background:#ede9fe; color:#4c1d95; margin-right:4px; white-space:nowrap; }
+  select, input[type=text] { font:inherit; padding:6px 8px; border:1px solid #cdd5df; border-radius:8px; background:#fff; width:100%; }
+  .cols { color:var(--sub); font-size:12px; margin-top:4px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; } @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
+  .feat { display:grid; grid-template-columns:22px 1fr; gap:2px 8px; margin:7px 0; font-size:13.5px; } .feat small { grid-column:2; color:var(--sub); font-size:12px; }
+  pre { background:#1f2430; color:#e8e8e8; padding:12px 14px; border-radius:8px; overflow:auto; font-size:12px; line-height:1.55; white-space:pre-wrap; word-break:break-all; }
+  ul.warn { margin:6px 0 0; padding-left:20px; font-size:13.5px; } ul.warn li { margin:5px 0; }
+  .meter { display:flex; gap:6px; align-items:center; margin:6px 0 10px; font-weight:800; } .meter i { width:44px; height:10px; border-radius:6px; background:#e6ebf1; display:block; }
+  button.sm { font:inherit; border:0; background:#eef2f7; border-radius:8px; padding:5px 10px; cursor:pointer; }
+  .sub { color:var(--sub); font-size:12.5px; }
+  #err { display:none; background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; padding:10px 14px; border-radius:10px; margin-bottom:14px; font-size:13px; }
+</style>
+<script src="config.js"></script>
+</head>
+<body>
+<header>
+  <h1>AIに渡す前の「データ棚卸し」</h1>
+  <p>AIエージェントに、データベースへの鍵を渡す前に：何が読めてしまうかを見て、渡す範囲を決める（デモ用）</p>
+</header>
+<div class="tabs" id="tabs">
+  <button data-tab="inv" class="on">① 棚卸し（いまのデータ）</button>
+  <button data-tab="url">② 接続URLをつくる</button>
+</div>
+<main>
+  <div id="err"></div>
+  <div id="inv"></div>
+  <div id="url" style="display:none"></div>
+</main>
+<script>
+const cfg = window.APP_CONFIG
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const showErr = (m) => { $('err').style.display = m ? 'block' : 'none'; $('err').textContent = m || '' }
+if (!cfg || !cfg.SUPABASE_URL || !cfg.SUPABASE_PUBLISHABLE_KEY) {
+  showErr('config.js がありません。config.example.js をコピーして、値を入れてください。'); throw new Error('config.js is missing')
+}
+
+document.getElementById('tabs').onclick = (e) => { const t = e.target.dataset.tab; if (!t) return
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === e.target))
+  $('inv').style.display = t === 'inv' ? '' : 'none'; $('url').style.display = t === 'url' ? '' : 'none' }
+
+// ---------- ① 棚卸し ----------
+const DECISIONS_KEY = 'ai-exposure-decisions'
+const decisions = JSON.parse(localStorage.getItem(DECISIONS_KEY) || '{}')   // { テーブル名: 'ok' | 'ng' }
+let report = null
+
+const COLUMN_TAGS = [
+  [/mail|phone|tel|name|address|birth|氏名/i, '個人情報かも'],
+  [/password|token|secret|key/i, '秘密かも'],
+  [/amount|price|salary|jpy|cost/i, '金額'],
+]
+const tagsFor = (cols) => { const out = new Set(); for (const c of cols) for (const [rx, label] of COLUMN_TAGS) if (rx.test(c)) out.add(label); return [...out] }
+
+// 誰に、どう見えるか（権限と、RLSの有無・ポリシー数から判断した「目安」）
+function viewFor(t, who) {
+  const priv = who === 'anon' ? t.anon_select : t.authenticated_select
+  if (!priv) return ['mute', '権限なし']
+  if (!t.rls_enabled) return ['bad', '全行見える']
+  const n = who === 'anon' ? t.anon_select_policies : t.auth_select_policies   // そのロールに当てはまる「読む」ポリシーの数
+  if (n === 0) return ['ok', '見えない']
+  return ['warn', '条件つき']
+}
+function aiView(t) {
+  if (!t.mcp_select) return ['ok', '読めない']
+  return report.role && report.role.rolbypassrls ? ['bad', '全行読める'] : ['warn', '条件つき']
+}
+
+function renderInv() {
+  const r = report, role = r.role
+  const readable = r.tables.filter((t) => t.mcp_select)
+  const mismatch = r.tables.filter((t) => decisions[t.name] === 'ng' && t.mcp_select)
+  let banner = ''
+  if (!role) banner = `<div class="alert warn">読み取り専用のロール（supabase_read_only_user）が見つかりませんでした。このデータベースでは、棚卸しの「AIの列」が当てになりません。</div>`
+  else if (role.rolbypassrls) banner = `<div class="alert bad"><b>読み取り専用のAI接続は、RLS（行ごとのアクセス制限）を通りません。</b><br>このデータベースでは、AIが読めるテーブルが<b>${readable.length}個</b>あり、その<b>全行</b>が見えます。「読み取り専用」は、書き込みを止めるだけで、見える範囲は狭めません。</div>`
+  if (mismatch.length) banner += `<div class="alert bad">⚠ 「見せたくない」と決めたテーブルが、<b>${mismatch.length}個</b>、AIから読めます：${mismatch.map((t) => esc(t.name)).join('、')}</div>`
+  else if (Object.values(decisions).includes('ng')) banner += `<div class="alert ok">「見せたくない」と決めたテーブルは、どれもAIから読めません。</div>`
+
+  const rows = r.tables.map((t) => {
+    const [ac, al] = viewFor(t, 'anon'), [uc, ul] = viewFor(t, 'auth'), [mc, ml] = aiView(t)
+    const tags = tagsFor(t.columns)
+    const d = decisions[t.name] || ''
+    const bad = d === 'ng' && t.mcp_select
+    return `<tr>
+      <td><b>${esc(t.name)}</b><div class="cols">${t.columns.map(esc).join(', ')}</div>${tags.length ? `<div style="margin-top:4px">${tags.map((x) => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : ''}</td>
+      <td style="white-space:nowrap">${t.rows}</td>
+      <td style="white-space:nowrap">${t.rls_enabled ? `<span class="pill mute">オン</span><div class="cols">ポリシー${t.policies}個</div>` : '<span class="pill bad">オフ</span>'}</td>
+      <td><span class="pill ${ac}">${al}</span></td>
+      <td><span class="pill ${uc}">${ul}</span></td>
+      <td><span class="pill ${mc}">${ml}</span></td>
+      <td><select data-t="${esc(t.name)}"><option value="">未決定</option><option value="ok" ${d === 'ok' ? 'selected' : ''}>見せてよい</option><option value="ng" ${d === 'ng' ? 'selected' : ''}>見せたくない</option></select>${bad ? '<div style="margin-top:4px"><span class="pill bad">⚠ AIから読めます</span></div>' : ''}</td></tr>`
+  }).join('')
+
+  $('inv').innerHTML = `${banner}
+    <div class="card"><h2>テーブルごとの「誰に、どう見えるか」</h2>
+      <table><thead><tr><th>テーブル</th><th style="white-space:nowrap">行数</th><th>RLS</th><th>ブラウザ（ログインなし）</th><th>ログインしたユーザー</th><th>AI（読み取り専用の接続）</th><th>AIに見せてよい？（あなたの判断）</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="sub" style="margin-top:10px">「見え方」は、権限・RLSの有無・「そのロールに当てはまる読むポリシー」の数から出した目安です（<b>見えない</b>＝読めるポリシーがない／<b>条件つき</b>＝ポリシーの条件に合う行だけ／<b>全行</b>＝RLSを通らない、またはRLSなし）。ポリシーの条件（using の中身）までは読んでいません。行の中身は、この画面には出しません。</div></div>
+    <div class="card"><h2>見せたくないデータがあるときの、考え方の例</h2>
+      <ul class="warn"><li><b>開発用のプロジェクト</b>につなぎ、本物のデータは入れない（ドキュメントでも推奨されていました）</li>
+      <li>見せたくないテーブルは、<b>別のプロジェクトに置く</b>（私は試していません）</li>
+      <li>「② 接続URLをつくる」で、<b>範囲（project_ref）・書き込み禁止・道具</b>を絞る</li>
+      <li>AIの操作は、<b>1つずつ人が承認</b>する設定のままにする</li></ul></div>`
+  $('inv').querySelectorAll('select[data-t]').forEach((s) => s.onchange = () => { decisions[s.dataset.t] = s.value; if (!s.value) delete decisions[s.dataset.t]; localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions)); renderInv() })
+}
+
+async function loadInv() {
+  showErr('')
+  try {
+    const res = await fetch(`${cfg.SUPABASE_URL}/functions/v1/exposure-report`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: cfg.SUPABASE_PUBLISHABLE_KEY }, body: '{}' })
+    const d = await res.json(); if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+    report = d; renderInv()
+  } catch (e) { showErr('棚卸しを読めませんでした：' + e.message) }
+}
+
+// ---------- ② 接続URL ----------
+const FEATURES = [
+  ['docs', 'ドキュメントの検索', true], ['database', 'テーブルの確認・SQLの実行', true], ['debugging', 'ログ・アドバイザーの確認', true],
+  ['development', 'URL・キー・型の取得', false], ['functions', 'Edge Functionの確認・デプロイ', false],
+  ['storage', 'ストレージの操作', false], ['branching', 'ブランチの作成・統合・削除', false], ['account', 'プロジェクトの作成・一時停止など', false],
+]
+const st = { ref: '', readOnly: true, features: new Set(FEATURES.filter((f) => f[2]).map((f) => f[0])) }
+const PLACEHOLDER = '<PROJECT_REF>'
+
+function buildUrl() {
+  const p = [`project_ref=${st.ref || PLACEHOLDER}`]
+  if (st.readOnly) p.push('read_only=true')
+  p.push('features=' + [...st.features].join('%2C'))
+  return 'https://mcp.supabase.com/mcp?' + p.join('&')
+}
+function risks() {
+  const w = []
+  if (!st.readOnly) w.push(['bad', '<b>書き込みができる</b>接続です。テーブルの削除や、データの書き換えも、AIが実行できます。'])
+  if (!st.ref) w.push(['bad', '<b>project_ref が空です。</b>ドキュメントでは、project_ref を付けると範囲が1つのプロジェクトに限定される、とあります。付けないと、アカウント全体につながる可能性があります。'])
+  if (st.features.has('account')) w.push(['warn', 'account を含めると、プロジェクトの作成・一時停止などのツールが出てきます（私の環境のツール名の一覧で見ました）。project_ref を付けると無効になる、とドキュメントにありますが、私は確かめていません。'])
+  if (st.features.has('branching')) w.push(['warn', 'branching を含めると、ブランチの削除・統合・リセットのツールが出てきます（ツール名の一覧で見ました）。'])
+  if (st.features.has('functions')) w.push(['warn', 'functions を含めると、Edge Functionをデプロイできるツールが出てきます。'])
+  if (st.features.size > 3) w.push(['warn', `道具が${st.features.size}グループあります。使わないものは外すと、間違いの範囲が狭くなります。`])
+  if (st.readOnly && st.ref) w.push(['ok', '読み取り専用で、範囲は1つのプロジェクトです。ただし、<b>見える範囲のデータは全部見えます</b>（①の棚卸しを見てください）。'])
+  w.push(['mute', '本番ではなく、開発用のプロジェクトにつなぎ、AIの操作は1つずつ承認してください。'])
+  return w
+}
+function level() {
+  let n = 0; if (!st.readOnly) n += 3; if (!st.ref) n += 3; n += Math.max(0, st.features.size - 3); if (st.features.has('account')) n += 1
+  return n >= 5 ? ['広い', 3, '#dc2626'] : n >= 2 ? ['ふつう', 2, '#d97706'] : ['狭い', 1, '#16a34a']
+}
+function renderUrl() {
+  const [label, bars, color] = level(), url = buildUrl()
+  $('url').innerHTML = `<div class="grid2"><div>
+    <div class="card"><h2>範囲（どのプロジェクトか）</h2>
+      <input type="text" id="ref" placeholder="${PLACEHOLDER}" value="${esc(st.ref)}">
+      <div style="margin-top:6px"><button class="sm" id="fillref">この画面のプロジェクトのIDを入れる</button></div></div>
+    <div class="card"><h2>書き込み</h2>
+      <label class="feat"><input type="checkbox" id="ro" ${st.readOnly ? 'checked' : ''}><span><b>読み取り専用にする</b></span><small>read_only=true。書き込み・削除ができなくなります（見える範囲は変わりません）</small></label></div>
+    <div class="card"><h2>道具（使える機能のグループ）</h2>
+      ${FEATURES.map(([k, d]) => `<label class="feat"><input type="checkbox" data-f="${k}" ${st.features.has(k) ? 'checked' : ''}><span><b>${k}</b></span><small>${esc(d)}</small></label>`).join('')}
+      <div class="sub">各グループの説明は、ツール名から私が読み取ったものです。</div></div></div>
+    <div><div class="card"><h2>渡す鍵の広さ</h2>
+      <div class="meter"><span style="color:${color}">${label}</span>${[1, 2, 3].map((i) => `<i style="${i <= bars ? `background:${color}` : ''}"></i>`).join('')}</div>
+      <ul class="warn">${risks().map(([c, m]) => `<li><span class="pill ${c}">${{ bad: '危険', warn: '注意', ok: 'OK', mute: '確認' }[c]}</span> ${m}</li>`).join('')}</ul></div>
+    <div class="card"><h2>接続URL</h2><pre id="u">${esc(url)}</pre>
+      <h2 style="margin-top:14px">AIツールに追加するコマンド（Claude Codeの例）</h2>
+      <pre>claude mcp add --scope project --transport http supabase \\\n  "${esc(url)}"</pre>
+      <div class="sub">このコマンドは、画面では実行しません。形は、ダッシュボードの Connect → MCP に出るものを写しました。</div></div></div></div>`
+  $('ref').oninput = (e) => { st.ref = e.target.value.trim(); refreshUrlOnly() }
+  $('fillref').onclick = () => { st.ref = new URL(cfg.SUPABASE_URL).hostname.split('.')[0]; renderUrl() }
+  $('ro').onchange = (e) => { st.readOnly = e.target.checked; renderUrl() }
+  $('url').querySelectorAll('input[data-f]').forEach((c) => c.onchange = () => { c.checked ? st.features.add(c.dataset.f) : st.features.delete(c.dataset.f); renderUrl() })
+}
+function refreshUrlOnly() { renderUrlKeepFocus() }
+function renderUrlKeepFocus() { const pos = $('ref').selectionStart; renderUrl(); const r = $('ref'); r.focus(); r.setSelectionRange(pos, pos) }
+
+renderUrl(); loadInv()
+</script>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data inventory before handing access to an AI</title>
+<style>
+  :root { --ink:#1f2933; --sub:#6b7785; --line:#e3e8ee; --bg:#f4f6f9; --brand:#2563eb; --good:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; line-height:1.6; }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:14px 28px; }
+  header h1 { margin:0; font-size:18px; } header p { margin:2px 0 0; color:var(--sub); font-size:12.5px; }
+  .tabs { display:flex; gap:6px; padding:12px 28px 0; background:#fff; border-bottom:1px solid var(--line); }
+  .tabs button { border:0; background:transparent; padding:9px 16px; font:inherit; font-weight:600; color:var(--sub); border-bottom:3px solid transparent; cursor:pointer; }
+  .tabs button.on { color:var(--brand); border-bottom-color:var(--brand); }
+  main { max-width:1040px; margin:22px auto; padding:0 20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin-bottom:18px; }
+  h2 { margin:0 0 10px; font-size:14px; color:var(--sub); font-weight:600; }
+  .alert { border-radius:12px; padding:12px 16px; font-size:14px; margin-bottom:18px; } .alert.bad { background:#fee2e2; border:1px solid #fca5a5; color:#7f1d1d; } .alert.ok { background:#dcfce7; border:1px solid #86efac; color:#14532d; } .alert.warn { background:#fef3c7; border:1px solid #fcd34d; color:#78350f; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; } th, td { padding:9px 8px; border-top:1px solid var(--line); text-align:left; vertical-align:top; } th { border-top:0; color:var(--sub); font-weight:600; font-size:12px; }
+  .pill { display:inline-block; font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:999px; white-space:nowrap; }
+  .pill.ok { background:#dcfce7; color:#14532d; } .pill.warn { background:#fef3c7; color:#78350f; } .pill.bad { background:#fee2e2; color:#7f1d1d; } .pill.mute { background:#eef2f7; color:#52606d; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:6px; background:#ede9fe; color:#4c1d95; margin-right:4px; white-space:nowrap; }
+  select, input[type=text] { font:inherit; padding:6px 8px; border:1px solid #cdd5df; border-radius:8px; background:#fff; width:100%; }
+  .cols { color:var(--sub); font-size:12px; margin-top:4px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; } @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
+  .feat { display:grid; grid-template-columns:22px 1fr; gap:2px 8px; margin:7px 0; font-size:13.5px; } .feat small { grid-column:2; color:var(--sub); font-size:12px; }
+  pre { background:#1f2430; color:#e8e8e8; padding:12px 14px; border-radius:8px; overflow:auto; font-size:12px; line-height:1.55; white-space:pre-wrap; word-break:break-all; }
+  ul.warn { margin:6px 0 0; padding-left:20px; font-size:13.5px; } ul.warn li { margin:5px 0; }
+  .meter { display:flex; gap:6px; align-items:center; margin:6px 0 10px; font-weight:800; } .meter i { width:44px; height:10px; border-radius:6px; background:#e6ebf1; display:block; }
+  button.sm { font:inherit; border:0; background:#eef2f7; border-radius:8px; padding:5px 10px; cursor:pointer; }
+  .sub { color:var(--sub); font-size:12.5px; }
+  #err { display:none; background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; padding:10px 14px; border-radius:10px; margin-bottom:14px; font-size:13px; }
+</style>
+<script src="config.js"></script>
+</head>
+<body>
+<header>
+  <h1>Data inventory before handing access to an AI</h1>
+  <p>Before giving an AI agent a key to your database: see what it could read, then decide how much to hand over (demo)</p>
+</header>
+<div class="tabs" id="tabs">
+  <button data-tab="inv" class="on">1. Inventory (your data now)</button>
+  <button data-tab="url">2. Build the connection URL</button>
+</div>
+<main>
+  <div id="err"></div>
+  <div id="inv"></div>
+  <div id="url" style="display:none"></div>
+</main>
+<script>
+const cfg = window.APP_CONFIG
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const showErr = (m) => { $('err').style.display = m ? 'block' : 'none'; $('err').textContent = m || '' }
+if (!cfg || !cfg.SUPABASE_URL || !cfg.SUPABASE_PUBLISHABLE_KEY) {
+  showErr('config.js is missing. Copy config.example.js and fill in the values.'); throw new Error('config.js is missing')
+}
+
+document.getElementById('tabs').onclick = (e) => { const t = e.target.dataset.tab; if (!t) return
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === e.target))
+  $('inv').style.display = t === 'inv' ? '' : 'none'; $('url').style.display = t === 'url' ? '' : 'none' }
+
+// ---------- 1. Inventory ----------
+const DECISIONS_KEY = 'ai-exposure-decisions'
+const decisions = JSON.parse(localStorage.getItem(DECISIONS_KEY) || '{}')   // { table name: 'ok' | 'ng' }
+let report = null
+
+const COLUMN_TAGS = [
+  [/mail|phone|tel|name|address|birth|氏名/i, 'maybe personal data'],   // 氏名 = "full name" (Japanese column name)
+  [/password|token|secret|key/i, 'maybe a secret'],
+  [/amount|price|salary|jpy|cost/i, 'amount of money'],
+]
+const tagsFor = (cols) => { const out = new Set(); for (const c of cols) for (const [rx, label] of COLUMN_TAGS) if (rx.test(c)) out.add(label); return [...out] }
+
+// Who can see it, and how (a rough guide from privileges, whether RLS is on, and the number of policies)
+function viewFor(t, who) {
+  const priv = who === 'anon' ? t.anon_select : t.authenticated_select
+  if (!priv) return ['mute', 'no privilege']
+  if (!t.rls_enabled) return ['bad', 'all rows visible']
+  const n = who === 'anon' ? t.anon_select_policies : t.auth_select_policies   // number of read policies that apply to that role
+  if (n === 0) return ['ok', 'not visible']
+  return ['warn', 'conditional']
+}
+function aiView(t) {
+  if (!t.mcp_select) return ['ok', 'cannot read']
+  return report.role && report.role.rolbypassrls ? ['bad', 'reads all rows'] : ['warn', 'conditional']
+}
+
+function renderInv() {
+  const r = report, role = r.role
+  const readable = r.tables.filter((t) => t.mcp_select)
+  const mismatch = r.tables.filter((t) => decisions[t.name] === 'ng' && t.mcp_select)
+  let banner = ''
+  if (!role) banner = `<div class="alert warn">The read-only role (supabase_read_only_user) was not found. In this database the "AI" column of the inventory cannot be trusted.</div>`
+  else if (role.rolbypassrls) banner = `<div class="alert bad"><b>The read-only AI connection skips RLS (row-level access limits).</b><br>In this database the AI can read <b>${readable.length} table(s)</b>, and sees <b>all rows</b> of them. "Read-only" only stops writes; it does not narrow what is visible.</div>`
+  if (mismatch.length) banner += `<div class="alert bad">⚠ <b>${mismatch.length}</b> table(s) you marked "do not show" can be read by the AI: ${mismatch.map((t) => esc(t.name)).join(', ')}</div>`
+  else if (Object.values(decisions).includes('ng')) banner += `<div class="alert ok">None of the tables you marked "do not show" can be read by the AI.</div>`
+
+  const rows = r.tables.map((t) => {
+    const [ac, al] = viewFor(t, 'anon'), [uc, ul] = viewFor(t, 'auth'), [mc, ml] = aiView(t)
+    const tags = tagsFor(t.columns)
+    const d = decisions[t.name] || ''
+    const bad = d === 'ng' && t.mcp_select
+    return `<tr>
+      <td><b>${esc(t.name)}</b><div class="cols">${t.columns.map(esc).join(', ')}</div>${tags.length ? `<div style="margin-top:4px">${tags.map((x) => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : ''}</td>
+      <td style="white-space:nowrap">${t.rows}</td>
+      <td style="white-space:nowrap">${t.rls_enabled ? `<span class="pill mute">on</span><div class="cols">${t.policies} polic${t.policies === 1 ? 'y' : 'ies'}</div>` : '<span class="pill bad">off</span>'}</td>
+      <td><span class="pill ${ac}">${al}</span></td>
+      <td><span class="pill ${uc}">${ul}</span></td>
+      <td><span class="pill ${mc}">${ml}</span></td>
+      <td><select data-t="${esc(t.name)}"><option value="">undecided</option><option value="ok" ${d === 'ok' ? 'selected' : ''}>OK to show</option><option value="ng" ${d === 'ng' ? 'selected' : ''}>do not show</option></select>${bad ? '<div style="margin-top:4px"><span class="pill bad">⚠ AI can read it</span></div>' : ''}</td></tr>`
+  }).join('')
+
+  $('inv').innerHTML = `${banner}
+    <div class="card"><h2>Per table: who sees it, and how</h2>
+      <table><thead><tr><th>Table</th><th style="white-space:nowrap">Rows</th><th>RLS</th><th>Browser (not logged in)</th><th>Logged-in user</th><th>AI (read-only connection)</th><th>OK to show the AI? (your call)</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="sub" style="margin-top:10px">"How it looks" is a rough guide computed from privileges, whether RLS is on, and the number of read policies that apply to that role (<b>not visible</b> = no read policy; <b>conditional</b> = only rows that match the policy condition; <b>all rows</b> = skips RLS, or RLS is off). I do not read the policy conditions (the contents of using). Row contents are never shown on this page.</div></div>
+    <div class="card"><h2>Ideas for when some data should not be shown</h2>
+      <ul class="warn"><li>Connect to a <b>development project</b> and keep real data out of it (the docs recommended this too)</li>
+      <li>Put tables you do not want to show in a <b>separate project</b> (I have not tried this)</li>
+      <li>In "2. Build the connection URL", narrow the <b>scope (project_ref), writes and tools</b></li>
+      <li>Keep the AI's actions on <b>manual, one-by-one approval</b></li></ul></div>`
+  $('inv').querySelectorAll('select[data-t]').forEach((s) => s.onchange = () => { decisions[s.dataset.t] = s.value; if (!s.value) delete decisions[s.dataset.t]; localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions)); renderInv() })
+}
+
+async function loadInv() {
+  showErr('')
+  try {
+    const res = await fetch(`${cfg.SUPABASE_URL}/functions/v1/exposure-report`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: cfg.SUPABASE_PUBLISHABLE_KEY }, body: '{}' })
+    const d = await res.json(); if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+    report = d; renderInv()
+  } catch (e) { showErr('Could not load the inventory: ' + e.message) }
+}
+
+// ---------- 2. Connection URL ----------
+const FEATURES = [
+  ['docs', 'Search the docs', true], ['database', 'Inspect tables, run SQL', true], ['debugging', 'Read logs and advisors', true],
+  ['development', 'Get URL, keys and types', false], ['functions', 'Inspect and deploy Edge Functions', false],
+  ['storage', 'Work with storage', false], ['branching', 'Create, merge and delete branches', false], ['account', 'Create and pause projects, etc.', false],
+]
+const st = { ref: '', readOnly: true, features: new Set(FEATURES.filter((f) => f[2]).map((f) => f[0])) }
+const PLACEHOLDER = '<PROJECT_REF>'
+
+function buildUrl() {
+  const p = [`project_ref=${st.ref || PLACEHOLDER}`]
+  if (st.readOnly) p.push('read_only=true')
+  p.push('features=' + [...st.features].join('%2C'))
+  return 'https://mcp.supabase.com/mcp?' + p.join('&')
+}
+function risks() {
+  const w = []
+  if (!st.readOnly) w.push(['bad', 'This connection <b>can write</b>. The AI could drop tables or rewrite data.'])
+  if (!st.ref) w.push(['bad', '<b>project_ref is empty.</b> The docs say that adding project_ref limits the scope to one project. Without it, the connection may reach your whole account.'])
+  if (st.features.has('account')) w.push(['warn', 'Including account brings in tools such as creating and pausing projects (I saw this in the tool-name list in my environment). The docs say it is disabled when project_ref is set, but I have not verified that.'])
+  if (st.features.has('branching')) w.push(['warn', 'Including branching brings in tools to delete, merge and reset branches (I saw this in the tool-name list).'])
+  if (st.features.has('functions')) w.push(['warn', 'Including functions brings in tools that can deploy Edge Functions.'])
+  if (st.features.size > 3) w.push(['warn', `You have ${st.features.size} tool groups. Remove the ones you do not use to shrink the room for mistakes.`])
+  if (st.readOnly && st.ref) w.push(['ok', 'Read-only, and limited to one project. But it <b>sees all the data within its reach</b> (see the inventory in tab 1).'])
+  w.push(['mute', 'Connect to a development project, not production, and approve the AI\'s actions one by one.'])
+  return w
+}
+function level() {
+  let n = 0; if (!st.readOnly) n += 3; if (!st.ref) n += 3; n += Math.max(0, st.features.size - 3); if (st.features.has('account')) n += 1
+  return n >= 5 ? ['wide', 3, '#dc2626'] : n >= 2 ? ['medium', 2, '#d97706'] : ['narrow', 1, '#16a34a']
+}
+function renderUrl() {
+  const [label, bars, color] = level(), url = buildUrl()
+  $('url').innerHTML = `<div class="grid2"><div>
+    <div class="card"><h2>Scope (which project)</h2>
+      <input type="text" id="ref" placeholder="${PLACEHOLDER}" value="${esc(st.ref)}">
+      <div style="margin-top:6px"><button class="sm" id="fillref">Fill in this page's project ID</button></div></div>
+    <div class="card"><h2>Writes</h2>
+      <label class="feat"><input type="checkbox" id="ro" ${st.readOnly ? 'checked' : ''}><span><b>Make it read-only</b></span><small>read_only=true. Writes and deletes stop working (what is visible does not change)</small></label></div>
+    <div class="card"><h2>Tools (groups of features)</h2>
+      ${FEATURES.map(([k, d]) => `<label class="feat"><input type="checkbox" data-f="${k}" ${st.features.has(k) ? 'checked' : ''}><span><b>${k}</b></span><small>${esc(d)}</small></label>`).join('')}
+      <div class="sub">The description of each group is my own reading of the tool names.</div></div></div>
+    <div><div class="card"><h2>How wide is the key you hand over?</h2>
+      <div class="meter"><span style="color:${color}">${label}</span>${[1, 2, 3].map((i) => `<i style="${i <= bars ? `background:${color}` : ''}"></i>`).join('')}</div>
+      <ul class="warn">${risks().map(([c, m]) => `<li><span class="pill ${c}">${{ bad: 'danger', warn: 'caution', ok: 'OK', mute: 'check' }[c]}</span> ${m}</li>`).join('')}</ul></div>
+    <div class="card"><h2>Connection URL</h2><pre id="u">${esc(url)}</pre>
+      <h2 style="margin-top:14px">Command to add to your AI tool (Claude Code example)</h2>
+      <pre>claude mcp add --scope project --transport http supabase \\\n  "${esc(url)}"</pre>
+      <div class="sub">This page does not run the command. I copied its shape from what the dashboard shows under Connect -> MCP.</div></div></div></div>`
+  $('ref').oninput = (e) => { st.ref = e.target.value.trim(); refreshUrlOnly() }
+  $('fillref').onclick = () => { st.ref = new URL(cfg.SUPABASE_URL).hostname.split('.')[0]; renderUrl() }
+  $('ro').onchange = (e) => { st.readOnly = e.target.checked; renderUrl() }
+  $('url').querySelectorAll('input[data-f]').forEach((c) => c.onchange = () => { c.checked ? st.features.add(c.dataset.f) : st.features.delete(c.dataset.f); renderUrl() })
+}
+function refreshUrlOnly() { renderUrlKeepFocus() }
+function renderUrlKeepFocus() { const pos = $('ref').selectionStart; renderUrl(); const r = $('ref'); r.focus(); r.setSelectionRange(pos, pos) }
+
+renderUrl(); loadInv()
+</script>
+</body>
+</html>
